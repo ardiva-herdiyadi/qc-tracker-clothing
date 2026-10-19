@@ -7,9 +7,39 @@ defect rate, dan rekomendasi keputusan operasional shopfloor secara real-time.
 """
 
 from datetime import datetime
+import json
 import pandas as pd
 import streamlit as st
 from qc_logic import evaluate_batch
+
+try:
+    import requests
+except ImportError:
+    requests = None
+
+
+def sync_to_gsheets(webhook_url: str, payload: dict) -> tuple[bool, str]:
+    """
+    Kirim data ke Google Sheets melalui Apps Script Webhook.
+    """
+    if not requests:
+        return False, "Library requests belum terpasang."
+    clean_url = webhook_url.strip() if webhook_url else ""
+    if not clean_url or not clean_url.startswith("https://script.google.com"):
+        return False, "URL Webhook Google Apps Script tidak valid."
+
+    try:
+        resp = requests.post(
+            clean_url,
+            data=json.dumps(payload),
+            headers={"Content-Type": "application/json"},
+            timeout=12,
+        )
+        if resp.status_code in [200, 302]:
+            return True, "Berhasil disinkronkan ke Google Sheets."
+        return False, f"Server Google merespons status: {resp.status_code}"
+    except Exception as e:
+        return False, f"Gagal terhubung: {str(e)}"
 
 
 def render_html(html_str: str) -> None:
@@ -238,26 +268,33 @@ st.markdown(
         display: inline-block;
     }
 
-    .tw-title {
-        font-size: 1.65rem;
-        font-weight: 800;
-        color: #0F172A;
-        letter-spacing: -0.025em;
-        line-height: 1.2;
-        margin: 0;
+    .tw-title,
+    .tw-header-bar h1,
+    h1.tw-title,
+    [data-testid="stMarkdownContainer"] .tw-title,
+    [data-testid="stMarkdownContainer"] h1.tw-title {
+        font-size: 1.65rem !important;
+        font-weight: 800 !important;
+        color: #0F172A !important;
+        -webkit-text-fill-color: #0F172A !important;
+        letter-spacing: -0.025em !important;
+        line-height: 1.2 !important;
+        margin: 0 !important;
     }
 
-    .tw-subtitle {
-        font-size: 0.925rem;
-        color: #64748B;
-        margin: 0;
-        line-height: 1.4;
+    .tw-subtitle,
+    [data-testid="stMarkdownContainer"] .tw-subtitle {
+        font-size: 0.925rem !important;
+        color: #475569 !important;
+        -webkit-text-fill-color: #475569 !important;
+        margin: 0 !important;
+        line-height: 1.4 !important;
     }
 
     /* KPI Metric Cards (Tremor / Modern Clean Style) */
     .tw-metric-container {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
         gap: 0.75rem;
         margin-bottom: 1.25rem;
     }
@@ -296,12 +333,15 @@ st.markdown(
     }
 
     .tw-metric-label {
-        font-size: 0.725rem;
-        font-weight: 700;
-        color: #64748B;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        margin-bottom: 0.2rem;
+        font-size: 0.7rem !important;
+        font-weight: 700 !important;
+        color: #64748B !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.04em !important;
+        margin-bottom: 0.2rem !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
     }
 
     .tw-metric-value {
@@ -924,6 +964,17 @@ if "user_cleared_history" not in st.session_state:
 if "qc_history" not in st.session_state or (not st.session_state.user_cleared_history and not st.session_state.qc_history):
     st.session_state.qc_history = get_initial_qc_history()
 
+# Inisialisasi URL Google Sheets Webhook
+default_webhook = "https://script.google.com/macros/s/AKfycbxAuO7zmm2eUA1urRbpxhfcZ8MwAK3Up6UHlkWWNpeSphnMJtyHP2mNicorUA_R9UhD/exec"
+try:
+    if "GSHEETS_WEBHOOK_URL" in st.secrets:
+        default_webhook = st.secrets["GSHEETS_WEBHOOK_URL"]
+except Exception:
+    pass
+
+if "gsheets_webhook_url" not in st.session_state:
+    st.session_state.gsheets_webhook_url = default_webhook
+
 # State untuk Quick-Fill Presets
 if "preset_data" not in st.session_state:
     st.session_state.preset_data = {
@@ -1021,6 +1072,60 @@ with st.sidebar:
         </div>
         """
     )
+
+    # Card 4: Integrasi Google Spreadsheet (Live Cloud Sync)
+    is_connected = bool(
+        st.session_state.gsheets_webhook_url
+        and st.session_state.gsheets_webhook_url.strip().startswith("https://script.google.com")
+    )
+    status_label = "Terhubung" if is_connected else "Belum Terhubung"
+    status_color = "#047857" if is_connected else "#64748B"
+    status_bg = "#ECFDF5" if is_connected else "#F1F5F9"
+    status_border = "#A7F3D0" if is_connected else "#E2E8F0"
+    dot_color = "#10B981" if is_connected else "#94A3B8"
+    card_border = "#10B981" if is_connected else "#2563EB"
+
+    render_html(
+        f"""
+        <div class="sb-card" style="border-top: 3px solid {card_border};">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+                <div class="sb-title" style="margin: 0;">Sinkronisasi Google Sheets</div>
+                <div style="display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.7rem; font-weight: 700; color: {status_color}; background: {status_bg}; padding: 0.15rem 0.55rem; border-radius: 9999px; border: 1px solid {status_border};">
+                    <span style="width: 0.4rem; height: 0.4rem; border-radius: 9999px; background-color: {dot_color}; display: inline-block;"></span>
+                    <span>{status_label}</span>
+                </div>
+            </div>
+            <div style="font-size: 0.725rem; color: #64748B; margin-bottom: 0.5rem; line-height: 1.35;">
+                Data inspeksi dapat otomatis tersimpan langsung ke Google Spreadsheet online secara real-time.
+            </div>
+        </div>
+        """
+    )
+
+    with st.expander("Pengaturan Google Spreadsheet", expanded=not is_connected):
+        webhook_input = st.text_input(
+            "URL Web App Apps Script:",
+            value=st.session_state.gsheets_webhook_url,
+            placeholder="https://script.google.com/macros/s/.../exec",
+            help="Tempelkan URL Web App dari Google Apps Script Spreadsheet Anda",
+            key="input_gsheets_webhook",
+        )
+        if webhook_input != st.session_state.gsheets_webhook_url:
+            st.session_state.gsheets_webhook_url = webhook_input
+            st.rerun()
+
+        if is_connected:
+            if st.button("Kirim 32 Data ke Spreadsheet", type="secondary", use_container_width=True, help="Kirim seluruh riwayat 32 batch saat ini ke Google Sheets"):
+                with st.spinner("Mengirim data ke Google Sheets..."):
+                    ok, msg = sync_to_gsheets(
+                        st.session_state.gsheets_webhook_url,
+                        {"action": "bulk", "rows": st.session_state.qc_history}
+                    )
+                    if ok:
+                        st.toast("Semua data riwayat berhasil dikirim ke Google Sheets!")
+                    else:
+                        st.error(f"Gagal mengirim: {msg}")
+
 
 
 # 5. Top Header Banner
@@ -1311,7 +1416,19 @@ with col_right:
                     "Rekomendasi": batch_result["recommendation"],
                 }
                 st.session_state.qc_history.insert(0, new_entry)
-                st.toast(f"Batch {batch_code} berhasil disimpan ke riwayat.")
+
+                # Sinkronisasi otomatis ke Google Sheets jika terhubung
+                if st.session_state.get("gsheets_webhook_url"):
+                    ok, msg = sync_to_gsheets(
+                        st.session_state.gsheets_webhook_url,
+                        {"action": "append", "data": new_entry}
+                    )
+                    if ok:
+                        st.toast(f"Batch {batch_code} tersimpan ke Riwayat & Google Sheets!")
+                    else:
+                        st.toast(f"Tersimpan di riwayat (Gagal sync Google Sheets: {msg})")
+                else:
+                    st.toast(f"Batch {batch_code} berhasil disimpan ke riwayat.")
 
 st.markdown("<div style='height: 1rem;'></div>", unsafe_allow_html=True)
 
